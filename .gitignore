@@ -1,0 +1,7 @@
+# Temp & Scratch files
+*.tmp
+cookies.txt
+page.html
+test_runner.py
+__pycache__/
+.DS_Store

@@ -1,0 +1,34 @@
+name: Amul Protein Stock Tracker
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Runs every hour
+  workflow_dispatch:       # Allows manual trigger from Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  check-stock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Stock Check
+        env:
+          AMUL_PINCODES: ${{ secrets.AMUL_PINCODES || vars.AMUL_PINCODES || '380060,380013' }}
+          GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          chmod +x ./check_stock.sh
+          ./check_stock.sh
+
+      - name: Commit and push state changes
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git commit -m "Update stock state [skip ci]" || echo "No state changes to commit"
+          git push
