@@ -2,7 +2,7 @@ name: Amul Protein Stock Tracker
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Runs every hour
+    - cron: '*/20 * * * *'
   workflow_dispatch:       # Allows manual trigger from Actions tab
 
 permissions:
