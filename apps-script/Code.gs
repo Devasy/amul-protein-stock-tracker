@@ -201,8 +201,8 @@ function run_(dry) {
   var props = PropertiesService.getScriptProperties();
   var all = props.getProperties();
 
-  var email = (all[PROP_EMAIL] || '').trim();
-  if (!dry && !email) {
+  var recipients = parseRecipients_(all[PROP_EMAIL]);
+  if (!dry && !recipients.length) {
     throw new Error('Script property ' + PROP_EMAIL + ' is not set. Run setup() first.');
   }
 
@@ -248,8 +248,9 @@ function run_(dry) {
   }
 
   if (restocked.length) {
-    sendRestockEmail_(email, restocked);
-    console.log('Emailed %s about %s restocked item(s).', email, restocked.length);
+    sendRestockEmail_(recipients.join(','), restocked);
+    console.log('Emailed %s about %s restocked item(s).',
+                recipients.join(', '), restocked.length);
   }
 
   if (Object.keys(stateUpdates).length) {
@@ -645,6 +646,34 @@ function sendRestockEmail_(recipient, items) {
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * ALERT_EMAIL may hold several addresses separated by commas, semicolons or
+ * whitespace — MailApp's `to` field takes a comma-separated list. Addresses are
+ * trimmed and de-duplicated, and anything obviously malformed is rejected up
+ * front: MailApp throws on a bad address, which would abort the whole send and
+ * lose the alert for the valid recipients too.
+ */
+function parseRecipients_(raw) {
+  var seen = {};
+  var out = [];
+
+  String(raw || '').split(/[,;\s]+/).forEach(function (addr) {
+    var a = addr.trim();
+    if (!a) return;
+
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a)) {
+      throw new Error('Invalid address in ' + PROP_EMAIL + ': "' + a + '"');
+    }
+    var lower = a.toLowerCase();
+    if (!seen[lower]) {
+      seen[lower] = true;
+      out.push(a);
+    }
+  });
+
+  return out;
+}
 
 function parsePincodes_(raw) {
   return String(raw || DEFAULT_PINCODES)

@@ -132,7 +132,7 @@ installed by `setup` is what runs the job.
 | Property | Purpose |
 | :--- | :--- |
 | `AMUL_PINCODES` | Comma-separated pincodes. Default `380060,380013`. |
-| `ALERT_EMAIL` | Recipient. Defaults to the account that ran `setup`. |
+| `ALERT_EMAIL` | Recipient(s). Defaults to the account that ran `setup`. Separate several with commas — `you@gmail.com,dad@gmail.com`. |
 | `RELAY_URL` | Your Worker's URL. **Required.** |
 | `RELAY_KEY` | The Worker's shared secret. **Required.** |
 | `RELAY_MODE` | `session` (default) or `stock` — see below. |
