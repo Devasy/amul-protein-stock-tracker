@@ -1,0 +1,13 @@
+name = "amul-relay"
+main = "amul-relay.js"
+compatibility_date = "2026-08-01"
+
+# The shared secret is NOT stored here. Set it with:
+#   wrangler secret put RELAY_KEY
+#
+# Deploy with:
+#   wrangler deploy
+#
+# Then put the resulting https://amul-relay.<subdomain>.workers.dev URL and the
+# same secret into the Apps Script project's Script Properties as RELAY_URL and
+# RELAY_KEY.

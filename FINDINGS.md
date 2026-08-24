@@ -163,3 +163,74 @@ StoreHippo's frontend client (`mystore_vue.js`) signs every API call with the `t
 2. **Environment Variables**:
    - `AMUL_PINCODE`: Set to your desired pincode (e.g. `380013` or `380060`).
    - `NTFY_TOPIC`: Set to your ntfy.sh notification topic.
+
+---
+
+## 5. User-Agent Content Negotiation (why a relay is needed)
+
+Discovered while porting this tracker to Google Apps Script. `shop.amul.com`
+serves **two entirely different HTML documents for the same URL**, selected by
+`User-Agent`.
+
+### Evidence
+
+Same URL (`/en/browse/protein`), same moment, only the UA differs:
+
+| User-Agent | HTTP | Bytes | `<script>` tags | `serverTimestamp` |
+| :--- | :---: | ---: | :---: | :---: |
+| `Mozilla/5.0 … Chrome/124.0 …` | 200 | 4,376 | many | ✅ present |
+| *(curl default / absent)* | 200 | 4,376 | many | ✅ present |
+| `Mozilla/5.0 (compatible; Google-Apps-Script; beanserver; …)` | 200 | 157,765 | 1 (a Cloudflare email decoder) | ❌ **absent** |
+
+The bot-shaped UA receives a **prerendered SEO variant**: fully populated
+product markup, but no inline JS bootstrap and therefore **no `serverTimestamp`
+and no `token`**. Critically it still returns **HTTP 200**, so naive error
+handling reports success and then fails at the parse step.
+
+### Why this is fatal for a pure Apps Script implementation
+
+- `tid` is strictly enforced. Omitting it returns `401 Unauthorized`; a
+  malformed one returns `503`.
+- `tid` requires `token`, which exists only in the browser variant.
+- **Google Apps Script cannot set `User-Agent`** — `UrlFetchApp` silently
+  strips the header and always sends its own
+  `Mozilla/5.0 (compatible; Google-Apps-Script; beanserver; +https://script.google.com; id: …)`.
+- Every candidate URL (`/`, `/en/cart`, `/en/checkout`, a product page,
+  a cache-busted browse URL) returns the token-less variant to that UA.
+
+### Two properties that make a minimal relay sufficient
+
+1. **The API ignores `User-Agent`.** A token and cookie obtained by a
+   browser-UA client work perfectly on API calls issued by a
+   `Google-Apps-Script` client. Only the *bootstrap page fetch* is UA-gated.
+2. **The session cookie is mandatory, and the substore must be set on it:**
+
+   | Request | Result |
+   | :--- | :--- |
+   | `tid`, no cookie | `data: []` |
+   | `tid` + cookie, no `setPreferences` | `data: []` |
+   | `tid` + cookie + `setPreferences: gujarat` | `available: 1` ✅ |
+
+   An empty `data` array therefore means *"session/substore not applied"* — a
+   broken check — and must **not** be treated as out-of-stock.
+
+### Why the prerendered page is not a usable fallback
+
+Parsing `Sold Out` / `Add to Cart` out of the 157 KB variant was tested against
+API ground truth for substore `gujarat`:
+
+| Product | Prerendered HTML | API truth | Match |
+| :--- | :---: | :---: | :---: |
+| Whey 960 g (30) | out | out | ✅ |
+| Whey 1.92 kg (60) | out | out | ✅ |
+| **Chocolate 1.02 kg (30)** | **out** | **in** | ❌ |
+| Chocolate 2.04 kg (60) | out | out | ✅ |
+
+It reports the one genuinely in-stock item as out — a **false negative on
+exactly the event the tracker exists to catch**. This confirms §1: HTML-only
+checking reflects national/fallback state, not per-pincode availability.
+
+### Resolution
+
+`worker/amul-relay.js` performs the UA-gated handshake with a real browser UA.
+See the README for deployment.
