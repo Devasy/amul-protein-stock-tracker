@@ -23,8 +23,8 @@ if [ -z "$GOOGLE_CHAT_WEBHOOK" ] && [ -z "$NTFY_TOPIC" ]; then
   echo "WARN: Neither GOOGLE_CHAT_WEBHOOK nor NTFY_TOPIC is set. Stock alerts will not be delivered externally." >&2
 fi
 
-# Supports AMUL_PINCODES or AMUL_PINCODE (comma or space separated, e.g. "380060,380013")
-RAW_PINCODES="${AMUL_PINCODES:-${AMUL_PINCODE:-380060,380013}}"
+# Supports AMUL_PINCODES or AMUL_PINCODE (comma or space separated, e.g. "380001,380015")
+RAW_PINCODES="${AMUL_PINCODES:-${AMUL_PINCODE:-380001,380015}}"
 
 # Split comma or space separated pincodes into an array
 IFS=', ' read -r -a PINCODES <<< "$RAW_PINCODES"
@@ -48,45 +48,43 @@ sha256_hash() {
     python3 -c "import hashlib, sys; sys.stdout.write(hashlib.sha256(sys.argv[1].encode('utf-8')).hexdigest())" "$input"
   fi
 }
+# Establish session context & dynamic TID header generator
+rm -f "$COOKIE_JAR"
 
+echo "======================================================="
+echo "[$(date -u +%FT%TZ)] Initializing Amul Shop session"
+echo "======================================================="
+
+if ! init_html=$(curl -sSL --max-time 20 --retry 2 -c "$COOKIE_JAR" -b "$COOKIE_JAR" -A "$UA" "$BASE_URL"); then
+  echo "ERROR: Failed to fetch initial browse page for session context." >&2
+  exit 1
+fi
+
+server_ts=$(printf "%s" "$init_html" | grep -o 'serverTimestamp\s*=\s*"[^"]*"' | head -n1 | cut -d'"' -f2 || true)
+token=$(printf "%s" "$init_html" | grep -o 'token\s*=\s*"[^"]*"' | head -n1 | cut -d'"' -f2 || true)
+
+if [ -z "$server_ts" ] || [ -z "$token" ]; then
+  echo "ERROR: Failed to parse serverTimestamp or token from initial page HTML." >&2
+  exit 1
+fi
+
+generate_tid() {
+  local rand_t=$(( RANDOM % 900 + 100 ))
+  local raw="${STORE_ID}:${server_ts}:${rand_t}:${token}"
+  local h
+  h=$(sha256_hash "$raw")
+  echo "${server_ts}:${rand_t}:${h}"
+}
+
+# 1. Resolve each pincode to its substore and group them
+declare -A SUBSTORE_PINS
+declare -a UNIQUE_SUBSTORES
+
+echo "Resolving pincode(s) to fulfillment substores..."
 for pincode in "${PINCODES[@]}"; do
-  # Trim whitespace
   pincode=$(echo "$pincode" | xargs)
   [ -z "$pincode" ] && continue
 
-  echo "======================================================="
-  echo "[$(date -u +%FT%TZ)] Checking stock for Pincode: $pincode"
-  echo "======================================================="
-
-  # Reset cookie jar for fresh session per pincode
-  rm -f "$COOKIE_JAR"
-
-  # 1. Fetch initial page to establish session & extract serverTimestamp and token
-  if ! init_html=$(curl -sSL --max-time 20 --retry 2 -c "$COOKIE_JAR" -b "$COOKIE_JAR" -A "$UA" "$BASE_URL"); then
-    echo "ERROR: Failed to fetch initial browse page for session context (pincode $pincode)." >&2
-    any_error=1
-    continue
-  fi
-
-  server_ts=$(printf "%s" "$init_html" | grep -o 'serverTimestamp\s*=\s*"[^"]*"' | head -n1 | cut -d'"' -f2 || true)
-  token=$(printf "%s" "$init_html" | grep -o 'token\s*=\s*"[^"]*"' | head -n1 | cut -d'"' -f2 || true)
-
-  if [ -z "$server_ts" ] || [ -z "$token" ]; then
-    echo "ERROR: Failed to parse serverTimestamp or token from initial page HTML." >&2
-    any_error=1
-    continue
-  fi
-
-  # Function to generate dynamic TID header for StoreHippo API calls
-  generate_tid() {
-    local rand_t=$(( RANDOM % 900 + 100 ))
-    local raw="${STORE_ID}:${server_ts}:${rand_t}:${token}"
-    local h
-    h=$(sha256_hash "$raw")
-    echo "${server_ts}:${rand_t}:${h}"
-  }
-
-  # 2. Resolve Pincode -> Substore
   pin_filter=$(jq -nc --arg p "$pincode" '[{"field":"pincode","value":$p,"operator":"regex"}]')
   pin_url="https://shop.amul.com/api/1.1/entity/pincode?filters=$(printf '%s' "$pin_filter" | jq -sRr @uri)&limit=10"
   tid_hdr=$(generate_tid)
@@ -111,7 +109,7 @@ for pincode in "${PINCODES[@]}"; do
   pin_res=$(printf "%s" "$pin_raw" | sed '$d')
 
   if [ "$pin_code" != "200" ]; then
-    echo "ERROR: Pincode API returned HTTP status $pin_code. Response: $pin_res" >&2
+    echo "ERROR: Pincode API returned HTTP status $pin_code for $pincode. Response: $pin_res" >&2
     any_error=1
     continue
   fi
@@ -123,9 +121,29 @@ for pincode in "${PINCODES[@]}"; do
     continue
   fi
 
-  echo "Resolved pincode $pincode to substore '$substore'"
+  echo "  Pincode $pincode -> substore '$substore'"
 
-  # 3. Set Substore in Session Preferences
+  if [ -z "${SUBSTORE_PINS[$substore]:-}" ]; then
+    SUBSTORE_PINS["$substore"]="$pincode"
+    UNIQUE_SUBSTORES+=("$substore")
+  else
+    SUBSTORE_PINS["$substore"]="${SUBSTORE_PINS[$substore]}, $pincode"
+  fi
+done
+
+if [ ${#UNIQUE_SUBSTORES[@]} -eq 0 ]; then
+  echo "ERROR: No valid substores resolved for provided pincodes." >&2
+  exit 1
+fi
+
+# 2. Check Stock for each unique substore (deduplicated)
+for substore in "${UNIQUE_SUBSTORES[@]}"; do
+  pins="${SUBSTORE_PINS[$substore]}"
+
+  echo "======================================================="
+  echo "[$(date -u +%FT%TZ)] Checking Substore: '$substore' (Pincode(s): $pins)"
+  echo "======================================================="
+
   tid_hdr=$(generate_tid)
   if ! pref_raw=$(curl -sSL --max-time 20 --retry 2 -X PUT \
     -w "\n%{http_code}" \
@@ -154,12 +172,11 @@ for pincode in "${PINCODES[@]}"; do
     continue
   fi
 
-  # 4. Check Stock for each product under the resolved substore
   for entry in "${PRODUCTS[@]}"; do
     slug="${entry%%|*}"
     name="${entry##*|}"
     url="https://shop.amul.com/en/product/${slug}"
-    state_key="${pincode}_${slug}"
+    state_key="${substore}_${slug}"
 
     q_json=$(jq -nc --arg s "$slug" '{"alias":$s}')
     prod_url="https://shop.amul.com/api/1.1/entity/ms.products?q=$(printf '%s' "$q_json" | jq -sRr @uri)"
@@ -199,27 +216,48 @@ for pincode in "${PINCODES[@]}"; do
     fi
 
     available=$(printf "%s" "$resp" | jq -r '.data[0].available // 0')
+    stock_qty=$(printf "%s" "$resp" | jq -r '.data[0].inventory_quantity // 0')
+    max_limit=$(printf "%s" "$resp" | jq -r '.data[0].max_limit_to_buy_this_product // empty')
 
     if [ "$available" = "1" ] || [ "$available" = "true" ]; then
       status="in"
+      stock_desc="${stock_qty} units available"
+      [ -n "$max_limit" ] && stock_desc="${stock_desc} (Max limit: ${max_limit} per order)"
     else
       status="out"
+      stock_desc="0 units available"
     fi
 
-    prev=$(jq -r --arg k "$state_key" '.[$k] // "unknown"' "$STATE_FILE")
-    echo "$name -> $status (was $prev)"
+    # Read previous status, checking substore key first, then backwards-compatible pincode keys
+    prev=$(jq -r --arg k "$state_key" '.[$k] // empty' "$STATE_FILE")
+    if [ -z "$prev" ]; then
+      IFS=', ' read -r -a pin_list <<< "$pins"
+      for p in "${pin_list[@]}"; do
+        p_clean=$(echo "$p" | xargs)
+        prev=$(jq -r --arg k "${p_clean}_${slug}" '.[$k] // empty' "$STATE_FILE")
+        [ -n "$prev" ] && break
+      done
+    fi
+    prev="${prev:-unknown}"
+
+    if [ "$status" = "in" ]; then
+      echo "$name -> in ($stock_desc, was $prev)"
+    else
+      echo "$name -> out (was $prev)"
+    fi
 
     if [ "$status" = "in" ] && [ "$prev" != "in" ]; then
       # 1. Send notification to Google Chat Space Webhook
       if [ -n "$GOOGLE_CHAT_WEBHOOK" ]; then
-        gchat_msg=$(jq -nc \
-          --arg text "🚨 *Amul Protein Back in Stock!*
+        gchat_text="🚨 *Amul Protein Back in Stock!*
 
 *Product:* $name
-*Pincode:* $pincode
+*Pincode(s):* $pins (Substore: $substore)
 *Status:* Available (In Stock)
-*Link:* $url" \
-          '{"text": $text}')
+*Stock:* $stock_desc
+*Link:* $url"
+
+        gchat_msg=$(jq -nc --arg text "$gchat_text" '{"text": $text}')
 
         curl -sS -X POST \
           -H "Content-Type: application/json; charset=UTF-8" \
@@ -234,13 +272,20 @@ for pincode in "${PINCODES[@]}"; do
           -H "Priority: urgent" \
           -H "Tags: tada" \
           -H "Click: $url" \
-          -d "$name is back in stock for pincode $pincode! Buy now: $url" \
+          -d "$name is back in stock for $pins ($stock_desc)! Buy now: $url" \
           "https://ntfy.sh/${NTFY_TOPIC}" || echo "WARN: NTFY notify failed for $name" >&2
       fi
     fi
 
     tmp=$(mktemp)
+    # Save substore state key and also sync individual pincode keys for backward compatibility
     jq --arg k "$state_key" --arg v "$status" '.[$k] = $v' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    IFS=', ' read -r -a pin_list <<< "$pins"
+    for p in "${pin_list[@]}"; do
+      p_clean=$(echo "$p" | xargs)
+      tmp=$(mktemp)
+      jq --arg k "${p_clean}_${slug}" --arg v "$status" '.[$k] = $v' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    done
   done
 done
 

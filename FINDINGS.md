@@ -15,7 +15,7 @@ On initial load without a pincode selected:
 ### The Real Flow:
 1. **Initial Handshake**: Fetch initial HTML page (`https://shop.amul.com/en/browse/protein`) to receive a session cookie (`jsessionid`), an embedded server timestamp (`serverTimestamp`), and a session token (`token`).
 2. **Dynamic Request Signing (`tid` header)**: StoreHippo validates all frontend API requests (`/api/1.1/*`) using a custom hash header called `tid`.
-3. **Pincode Lookup**: Query StoreHippo's `pincode` entity to resolve the 6-digit delivery pincode into a `substore` identifier (e.g., `380013` $\rightarrow$ `gujarat`, `110001` $\rightarrow$ `delhi`).
+3. **Pincode Lookup**: Query StoreHippo's `pincode` entity to resolve the 6-digit delivery pincode into a `substore` identifier (e.g., `380001` $\rightarrow$ `gujarat`, `110001` $\rightarrow$ `delhi`).
 4. **Session Substore Context**: Issue a `PUT` request to `/api/1.1/entity/ms.settings/_/setPreferences` with `{"store": "<substore_name>"}`. This binds the server-side session associated with the `jsessionid` cookie to that regional substore.
 5. **Per-Pincode Stock Check**: Query `/api/1.1/entity/ms.products?q={"alias":"<product-slug>"}` with the session cookie and signed `tid` header.
 6. **Real Availability Evaluation (`available` vs `inventory_quantity`)**:
@@ -60,7 +60,7 @@ StoreHippo's frontend client (`mystore_vue.js`) signs every API call with the `t
 ---
 
 ### Request 3: Pincode -> Substore Resolution
-- **URL**: `https://shop.amul.com/api/1.1/entity/pincode?filters=%5B%7B%22field%22%3A%22pincode%22%2C%22value%22%3A%22380013%22%2C%22operator%22%3A%22regex%22%7D%5D&limit=10`
+- **URL**: `https://shop.amul.com/api/1.1/entity/pincode?filters=%5B%7B%22field%22%3A%22pincode%22%2C%22value%22%3A%22380001%22%2C%22operator%22%3A%22regex%22%7D%5D&limit=10`
   - Encoded query: `filters=[{"field":"pincode","value":"<PINCODE>","operator":"regex"}]&limit=10`
 - **Method**: `GET`
 - **Headers**: Same as Request 2.
@@ -74,7 +74,7 @@ StoreHippo's frontend client (`mystore_vue.js`) signs every API call with the `t
     "data": [
       {
         "_id": "664f309d615a647f3cf04d4e",
-        "pincode": "380013",
+        "pincode": "380001",
         "substore": "gujarat",
         "created_on": "2024-05-23T12:03:41.518Z",
         "updated_on": "2024-09-06T13:00:36.362Z"
@@ -145,7 +145,7 @@ StoreHippo's frontend client (`mystore_vue.js`) signs every API call with the `t
 
 ---
 
-## 3. Real Status Verification for `380013` & `380060`
+## 3. Real Status Verification for Gujarat (380001)
 
 | Product | `available` Flag | Website Status |
 | :--- | :---: | :---: |
@@ -161,7 +161,7 @@ StoreHippo's frontend client (`mystore_vue.js`) signs every API call with the `t
 
 1. **Session Tokens**: Freshly created per execution from the initial HTML handshake (never expires or goes stale).
 2. **Environment Variables**:
-   - `AMUL_PINCODE`: Set to your desired pincode (e.g. `380013` or `380060`).
+   - `AMUL_PINCODES`: Set to your desired pincode(s) (e.g. `380001,380015`).
    - `NTFY_TOPIC`: Set to your ntfy.sh notification topic.
 
 ---

@@ -59,7 +59,7 @@ var PRODUCT_URL_PREFIX = ORIGIN + '/en/product/';
 
 var TRIGGER_MINUTES = 15;
 var MAX_REDIRECTS = 5;
-var DEFAULT_PINCODES = '380060,380013';
+var DEFAULT_PINCODES = '380001,380015';
 
 // Script Property keys. Edit under Project Settings > Script Properties.
 var PROP_PINCODES = 'AMUL_PINCODES';
@@ -220,21 +220,43 @@ function run_(dry) {
   var stateUpdates = {};
 
   reading.rows.forEach(function (row) {
-    var key = STATE_PREFIX + row.pincode + '_' + row.slug;
-    var prev = all[key] || 'unknown';
+    var key = STATE_PREFIX + row.substore + '_' + row.slug;
+    var prev = all[key];
+    if (!prev && row.pincodes && row.pincodes.length) {
+      for (var i = 0; i < row.pincodes.length; i++) {
+        var legacyKey = STATE_PREFIX + row.pincodes[i] + '_' + row.slug;
+        if (all[legacyKey]) {
+          prev = all[legacyKey];
+          break;
+        }
+      }
+    }
+    prev = prev || 'unknown';
 
-    console.log('%s @ %s -> %s (was %s)', row.name, row.pincode, row.status, prev);
+    var stockDesc = row.status === 'in'
+      ? row.stock + ' units available' + (row.maxLimit ? ' (Max limit: ' + row.maxLimit + ' per order)' : '')
+      : '0 units available';
+
+    console.log('%s @ %s (pincodes: %s) -> %s (%s, was %s)',
+                row.name, row.substore, row.pincodeDisplay, row.status, stockDesc, prev);
 
     if (row.status === 'in' && prev !== 'in') {
       restocked.push({
         name: row.name,
-        pincode: row.pincode,
+        substore: row.substore,
+        pincodes: row.pincodeDisplay,
+        stockDesc: stockDesc,
         url: PRODUCT_URL_PREFIX + row.slug
       });
     }
     // Only successful checks produce rows, so a failed call can never
     // overwrite "in" with "out" and swallow the next alert.
     stateUpdates[key] = row.status;
+    if (row.pincodes) {
+      row.pincodes.forEach(function (pin) {
+        stateUpdates[STATE_PREFIX + pin + '_' + row.slug] = row.status;
+      });
+    }
   });
 
   if (dry) {
@@ -272,34 +294,62 @@ function readViaSessionRelay_(cfg, pincodes) {
   var rows = [];
   var errors = [];
 
-  pincodes.forEach(function (pincode) {
-    console.log('=== Checking pincode %s ===', pincode);
-    var session;
+  var session;
+  try {
+    session = relaySession_(cfg);
+  } catch (e) {
+    return { rows: [], errors: ['relay session init failed: ' + e.message] };
+  }
 
+  // 1. Resolve all pincodes to substores and group them
+  var substorePincodes = {}; // { 'gujarat': ['380001', '380015'] }
+  var uniqueSubstores = [];
+
+  pincodes.forEach(function (pincode) {
     try {
-      // Fresh session per pincode: the substore is bound to the session, so
-      // reusing one across pincodes would cross-contaminate results.
-      session = relaySession_(cfg);
       var substore = resolveSubstore_(session, pincode);
-      setSubstore_(session, substore);
       console.log('Resolved pincode %s to substore "%s"', pincode, substore);
+      if (!substorePincodes[substore]) {
+        substorePincodes[substore] = [];
+        uniqueSubstores.push(substore);
+      }
+      substorePincodes[substore].push(pincode);
     } catch (e) {
       errors.push('pincode ' + pincode + ': ' + e.message);
       console.error('Pincode %s failed: %s', pincode, e.message);
+    }
+  });
+
+  // 2. Check each unique substore once (deduplicated)
+  uniqueSubstores.forEach(function (substore) {
+    var pins = substorePincodes[substore];
+    var pinDisplay = pins.join(', ');
+    console.log('=== Checking substore "%s" (pincodes: %s) ===', substore, pinDisplay);
+
+    try {
+      setSubstore_(session, substore);
+    } catch (e) {
+      errors.push('substore ' + substore + ': ' + e.message);
+      console.error('Substore %s setPreferences failed: %s', substore, e.message);
       return;
     }
 
     PRODUCTS.forEach(function (product) {
       try {
+        var prod = checkProduct_(session, product.slug);
         rows.push({
-          pincode: pincode,
+          substore: substore,
+          pincodes: pins,
+          pincodeDisplay: pinDisplay,
           slug: product.slug,
           name: product.name,
-          status: checkProduct_(session, product.slug) ? 'in' : 'out'
+          status: prod.available ? 'in' : 'out',
+          stock: prod.stock,
+          maxLimit: prod.maxLimit
         });
       } catch (e) {
-        errors.push(product.name + ' @ ' + pincode + ': ' + e.message);
-        console.error('%s @ %s failed: %s', product.name, pincode, e.message);
+        errors.push(product.name + ' @ ' + substore + ': ' + e.message);
+        console.error('%s @ %s failed: %s', product.name, substore, e.message);
       }
     });
   });
@@ -313,13 +363,19 @@ function readViaStockRelay_(cfg, pincodes) {
   var rows = [];
 
   (body.results || []).forEach(function (result) {
-    console.log('=== pincode %s -> substore %s ===', result.pincode, result.substore);
+    var pins = Array.isArray(result.pincodes) ? result.pincodes : [result.pincode];
+    var pinDisplay = pins.join(', ');
+    console.log('=== substore %s (pincodes: %s) ===', result.substore, pinDisplay);
     (result.products || []).forEach(function (p) {
       rows.push({
-        pincode: result.pincode,
+        substore: result.substore,
+        pincodes: pins,
+        pincodeDisplay: pinDisplay,
         slug: p.slug,
         name: p.name,
-        status: p.available ? 'in' : 'out'
+        status: p.available ? 'in' : 'out',
+        stock: p.stock != null ? p.stock : (p.inventory_quantity != null ? p.inventory_quantity : 0),
+        maxLimit: p.maxLimit != null ? p.maxLimit : p.max_limit_to_buy_this_product
       });
     });
   });
@@ -422,7 +478,7 @@ function setSubstore_(session, substore) {
   }, 'setPreferences');
 }
 
-/** Read the live availability flag for one product slug. */
+/** Read the live availability flag and stock count for one product slug. */
 function checkProduct_(session, slug) {
   var url = ORIGIN + '/api/1.1/entity/ms.products?q=' +
             encodeURIComponent(JSON.stringify({ alias: slug }));
@@ -439,9 +495,17 @@ function checkProduct_(session, slug) {
   }
 
   // `available` is the storefront flag: 1 = Add to Cart, 0 = Sold Out.
-  // inventory_quantity is a catalog counter and does NOT mean purchasable.
-  var available = body.data[0].available;
-  return available === 1 || available === true || available === '1';
+  // inventory_quantity is the live warehouse inventory count when available == 1.
+  var item = body.data[0];
+  var available = item.available === 1 || item.available === true || item.available === '1';
+  var stock = item.inventory_quantity != null ? Number(item.inventory_quantity) : 0;
+  var maxLimit = item.max_limit_to_buy_this_product != null ? Number(item.max_limit_to_buy_this_product) : null;
+
+  return {
+    available: available,
+    stock: stock,
+    maxLimit: maxLimit
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -602,7 +666,10 @@ function sendRestockEmail_(recipient, items) {
                 (items.length === 1 ? ' item' : ' items');
 
   var plain = items.map(function (item) {
-    return item.name + '\n  Pincode: ' + item.pincode + '\n  Buy: ' + item.url;
+    return item.name + '\n' +
+           '  Pincodes: ' + item.pincodes + ' (Substore: ' + item.substore + ')\n' +
+           '  Stock: ' + item.stockDesc + '\n' +
+           '  Buy: ' + item.url;
   }).join('\n\n');
 
   var rows = items.map(function (item) {
@@ -611,7 +678,10 @@ function sendRestockEmail_(recipient, items) {
         '<strong>' + escapeHtml_(item.name) + '</strong>' +
       '</td>' +
       '<td style="padding:10px 14px;border-bottom:1px solid #eee;">' +
-        escapeHtml_(item.pincode) +
+        escapeHtml_(item.pincodes) + '<br><small style="color:#777;">' + escapeHtml_(item.substore) + '</small>' +
+      '</td>' +
+      '<td style="padding:10px 14px;border-bottom:1px solid #eee;">' +
+        escapeHtml_(item.stockDesc) +
       '</td>' +
       '<td style="padding:10px 14px;border-bottom:1px solid #eee;">' +
         '<a href="' + escapeHtml_(item.url) + '">Buy now</a>' +
@@ -625,7 +695,8 @@ function sendRestockEmail_(recipient, items) {
       '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;">' +
         '<thead><tr>' +
           '<th align="left" style="padding:8px 14px;border-bottom:2px solid #333;">Product</th>' +
-          '<th align="left" style="padding:8px 14px;border-bottom:2px solid #333;">Pincode</th>' +
+          '<th align="left" style="padding:8px 14px;border-bottom:2px solid #333;">Pincode(s)</th>' +
+          '<th align="left" style="padding:8px 14px;border-bottom:2px solid #333;">Stock</th>' +
           '<th align="left" style="padding:8px 14px;border-bottom:2px solid #333;">Link</th>' +
         '</tr></thead>' +
         '<tbody>' + rows + '</tbody>' +

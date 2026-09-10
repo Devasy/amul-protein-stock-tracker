@@ -21,10 +21,10 @@ paired with a small Cloudflare Worker that performs the one request Apps Script 
 ## ⚡ How It Works
 1. **Dynamic Session Handshake**: Fetches the initial page to extract live server timestamp and security tokens.
 2. **Request Signing (`tid` header)**: Generates StoreHippo's SHA-256 cryptographic request signatures for authentication.
-3. **Pincode $\rightarrow$ Substore Resolution**: Maps delivery pincodes (e.g. `380060`, `380013`) to fulfillment centers (`gujarat`, `delhi`, etc.).
+3. **Pincode $\rightarrow$ Substore Resolution & Deduplication**: Resolves delivery pincodes (e.g. `380001`, `380015`) to fulfillment centers (`gujarat`, `delhi`, etc.) and groups pincodes sharing the same substore so products are checked only once without redundant network calls or duplicate alerts.
 4. **Per-Substore Session Context**: Binds the session cookie to the regional warehouse context via `ms.settings/_/setPreferences`.
-5. **Direct Availability Evaluation**: Reads the live client-facing `available` flag (`1` = In Stock, `0` = Sold Out).
-6. **State Tracking & Alerts**: Tracks previous state in `state.json` and only triggers alerts on `out` $\rightarrow$ `in` transitions.
+5. **Direct Availability & Live Stock Evaluation**: Reads the live client-facing `available` flag (`1` = In Stock, `0` = Sold Out) and extracts live units in stock (`inventory_quantity`) and per-order limits (`max_limit_to_buy_this_product`).
+6. **State Tracking & Consolidated Alerts**: Tracks previous state in `state.json` (keyed by substore and pincode) and triggers a consolidated alert on `out` $\rightarrow$ `in` transitions reporting all covered pincodes, stock quantity, and limits.
 
 ---
 
@@ -33,7 +33,7 @@ paired with a small Cloudflare Worker that performs the one request Apps Script 
 ### 1. Configure GitHub Secrets / Variables
 Go to **Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions** and add:
 - `GOOGLE_CHAT_WEBHOOK`: *(Secret)* Your Google Chat Space incoming webhook URL.
-- `AMUL_PINCODES`: *(Optional Secret or Variable)* Comma-separated pincodes to check (default: `380060,380013`).
+- `AMUL_PINCODES`: *(Optional Secret or Variable)* Comma-separated pincodes to check (default: `380001,380015`).
 - `NTFY_TOPIC`: *(Optional Secret)* Your [ntfy.sh](https://ntfy.sh) topic name.
 
 ### 2. Automatic Hourly Execution
@@ -52,7 +52,7 @@ The included workflow `.github/workflows/check_stock.yml` runs automatically eve
 GOOGLE_CHAT_WEBHOOK="https://chat.googleapis.com/..." ./check_stock.sh
 
 # Check with custom pincodes
-AMUL_PINCODES="380060,380013" GOOGLE_CHAT_WEBHOOK="https://chat.googleapis.com/..." ./check_stock.sh
+AMUL_PINCODES="380001,380015" GOOGLE_CHAT_WEBHOOK="https://chat.googleapis.com/..." ./check_stock.sh
 ```
 
 ---
@@ -131,7 +131,7 @@ installed by `setup` is what runs the job.
 
 | Property | Purpose |
 | :--- | :--- |
-| `AMUL_PINCODES` | Comma-separated pincodes. Default `380060,380013`. |
+| `AMUL_PINCODES` | Comma-separated pincodes. Default `380001,380015`. |
 | `ALERT_EMAIL` | Recipient(s). Defaults to the account that ran `setup`. Separate several with commas — `you@gmail.com,dad@gmail.com`. |
 | `RELAY_URL` | Your Worker's URL. **Required.** |
 | `RELAY_KEY` | The Worker's shared secret. **Required.** |

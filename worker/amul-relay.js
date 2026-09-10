@@ -19,7 +19,7 @@
  *       -> { serverTimestamp, token, cookie }
  *       Apps Script then makes the pincode/substore/product calls itself.
  *
- *   GET /stock?pincodes=380060,380013
+ *   GET /stock?pincodes=380001,380015
  *       -> { results: [...], errors: [...] }
  *       Performs the entire check here instead. Use this if /session fails
  *       from Apps Script because StoreHippo binds the session to the IP that
@@ -113,35 +113,53 @@ async function openSession() {
   };
 }
 
-/** Full per-pincode check, run entirely here. Mirrors check_stock.sh. */
+/** Full per-pincode check, run entirely here. Deduplicated by substore. */
 async function checkStock(pincodes) {
   const results = [];
   const errors = [];
 
-  for (const pincode of pincodes) {
-    try {
-      // A fresh session per pincode: the substore is bound to the session,
-      // so reusing one would cross-contaminate results.
-      const session = await openSession();
-      const substore = await resolveSubstore(session, pincode);
-      await setSubstore(session, substore);
+  try {
+    const session = await openSession();
 
-      const products = [];
-      for (const product of PRODUCTS) {
-        try {
-          products.push({
-            slug: product.slug,
-            name: product.name,
-            available: await productAvailable(session, product.slug)
-          });
-        } catch (e) {
-          errors.push(`${product.name} @ ${pincode}: ${e.message}`);
-        }
+    // 1. Resolve all pincodes to substores and group them
+    const substorePincodes = {}; // { 'gujarat': ['380001', '380015'] }
+    for (const pincode of pincodes) {
+      try {
+        const substore = await resolveSubstore(session, pincode);
+        if (!substorePincodes[substore]) substorePincodes[substore] = [];
+        substorePincodes[substore].push(pincode);
+      } catch (e) {
+        errors.push(`pincode ${pincode}: ${e.message}`);
       }
-      results.push({ pincode, substore, products });
-    } catch (e) {
-      errors.push(`pincode ${pincode}: ${e.message}`);
     }
+
+    // 2. Query each unique substore once (deduplicated)
+    for (const [substore, pins] of Object.entries(substorePincodes)) {
+      try {
+        await setSubstore(session, substore);
+
+        const products = [];
+        for (const product of PRODUCTS) {
+          try {
+            const info = await productInfo(session, product.slug);
+            products.push({
+              slug: product.slug,
+              name: product.name,
+              available: info.available,
+              stock: info.stock,
+              maxLimit: info.maxLimit
+            });
+          } catch (e) {
+            errors.push(`${product.name} @ ${substore}: ${e.message}`);
+          }
+        }
+        results.push({ substore, pincodes: pins, pincode: pins[0], products });
+      } catch (e) {
+        errors.push(`substore ${substore}: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    errors.push(`session init failed: ${e.message}`);
   }
 
   return { results, errors, checkedAt: new Date().toISOString() };
@@ -168,7 +186,7 @@ async function setSubstore(session, substore) {
   }, 'setPreferences');
 }
 
-async function productAvailable(session, slug) {
+async function productInfo(session, slug) {
   const body = await apiJson(session,
     `${ORIGIN}/api/1.1/entity/ms.products?q=${encodeURIComponent(JSON.stringify({ alias: slug }))}`,
     {}, 'product lookup');
@@ -179,8 +197,12 @@ async function productAvailable(session, slug) {
   if (!body.data || !body.data.length) {
     throw new Error(`no product record for ${slug} (session/substore not applied?)`);
   }
-  const available = body.data[0].available;
-  return available === 1 || available === true || available === '1';
+  const item = body.data[0];
+  const available = item.available === 1 || item.available === true || item.available === '1';
+  const stock = item.inventory_quantity != null ? Number(item.inventory_quantity) : 0;
+  const maxLimit = item.max_limit_to_buy_this_product != null ? Number(item.max_limit_to_buy_this_product) : null;
+
+  return { available, stock, maxLimit };
 }
 
 /** Signed StoreHippo API call. */
