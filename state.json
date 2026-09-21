@@ -5,7 +5,7 @@
   "amul-chocolate-whey-protein-34-g-or-pack-of-60-sachets": "out",
   "gujarat_amul-whey-protein-32-g-or-pack-of-30-sachets": "out",
   "gujarat_amul-whey-protein-32-g-or-pack-of-60-sachets": "out",
-  "gujarat_amul-chocolate-whey-protein-34-g-or-pack-of-30-sachets": "in",
+  "gujarat_amul-chocolate-whey-protein-34-g-or-pack-of-30-sachets": "out",
   "gujarat_amul-chocolate-whey-protein-34-g-or-pack-of-60-sachets": "in",
   "karnataka_amul-whey-protein-32-g-or-pack-of-30-sachets": "in",
   "560001_amul-whey-protein-32-g-or-pack-of-30-sachets": "in",
@@ -23,8 +23,8 @@
   "380013_amul-whey-protein-32-g-or-pack-of-30-sachets": "out",
   "380060_amul-whey-protein-32-g-or-pack-of-60-sachets": "out",
   "380013_amul-whey-protein-32-g-or-pack-of-60-sachets": "out",
-  "380060_amul-chocolate-whey-protein-34-g-or-pack-of-30-sachets": "in",
-  "380013_amul-chocolate-whey-protein-34-g-or-pack-of-30-sachets": "in",
+  "380060_amul-chocolate-whey-protein-34-g-or-pack-of-30-sachets": "out",
+  "380013_amul-chocolate-whey-protein-34-g-or-pack-of-30-sachets": "out",
   "380060_amul-chocolate-whey-protein-34-g-or-pack-of-60-sachets": "in",
   "380013_amul-chocolate-whey-protein-34-g-or-pack-of-60-sachets": "in"
 }
